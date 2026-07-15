@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Patricia Web Bot</title>
+    <!-- Load Chessboard.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #2b2b2b; color: white; text-align: center; margin-top: 50px; }
+        #board { width: 400px; margin: 0 auto; border: 4px solid #4b4844; }
+        .controls { margin-top: 20px; max-width: 600px; margin-left: auto; margin-right: auto; }
+        .control-row { margin-bottom: 10px; }
+        select, button { padding: 8px; font-size: 14px; margin: 3px; cursor: pointer; }
+        input[type="checkbox"] { transform: scale(1.2); margin-right: 5px; cursor: pointer; }
+        label { cursor: pointer; margin-right: 15px; }
+        #status { color: #f6f669; }
+    </style>
+</head>
+<body>
+
+    <h2>Play Against Patricia</h2>
+    <div id="board"></div>
+
+    <div class="controls">
+        <div class="control-row">
+            <label>Bot Elo: </label>
+            <select id="elo-select">
+                <option value="600">600 (Beginner)</option>
+                <option value="1200" selected>1200 (Intermediate)</option>
+                <option value="1800">1800 (Advanced)</option>
+                <option value="2400">2400 (Master)</option>
+            </select>
+            <button onclick="resetGame()">New Game</button>
+            <button onclick="undoMove()">Undo Move</button>
+            <button onclick="loadFEN()">Load FEN</button>
+        </div>
+        <div class="control-row">
+            <label>
+                <input type="checkbox" id="analysis-mode" onchange="toggleAnalysis()">
+                <strong>Analysis Mode</strong> (Play both sides)
+            </label>
+        </div>
+    </div>
+
+    <h3 id="status">Your Turn</h3>
+
+    <!-- Load jQuery, Chessboard.js, and Chess.js -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+
+    <script>
+        var board = null;
+        var game = new Chess();
+        var $status = $('#status');
+
+        var currentRequestID = 0;
+
+        function onDragStart (source, piece, position, orientation) {
+            if (game.game_over()) return false;
+
+            var isAnalysis = document.getElementById('analysis-mode').checked;
+
+            if (!isAnalysis && piece.search(/^b/) !== -1) {
+                return false;
+            }
+        }
+
+        function onDrop (source, target) {
+            var pieceOnBoard = game.get(source);
+            var isPromotion = false;
+
+            if (pieceOnBoard && pieceOnBoard.type === 'p') {
+                if ((pieceOnBoard.color === 'w' && target.charAt(1) === '8') ||
+                    (pieceOnBoard.color === 'b' && target.charAt(1) === '1')) {
+                    isPromotion = true;
+                }
+            }
+
+            var promoPiece = 'q';
+            if (isPromotion) {
+                var userInput = prompt("Promote to: (q)ueen, (r)ook, (b)ishop, or (n)ight?", "q");
+                if (userInput) {
+                    promoPiece = userInput.toLowerCase().charAt(0);
+                    if (!['q', 'r', 'b', 'n'].includes(promoPiece)) promoPiece = 'q';
+                }
+            }
+
+            var move = game.move({
+                from: source,
+                to: target,
+                promotion: promoPiece
+            });
+
+            if (move === null) return 'snapback';
+
+            updateStatus();
+
+            var isAnalysis = document.getElementById('analysis-mode').checked;
+
+            if (!isAnalysis && !game.game_over()) {
+                $status.text("Patricia is thinking...");
+
+                var reqID = ++currentRequestID;
+
+                fetch('/api/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        fen: game.fen(),
+                        elo: document.getElementById('elo-select').value
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (reqID !== currentRequestID) return;
+
+                    // THE FIX: Parse Patricia's UCI move and play it normally!
+                    var uci = data.move; // e.g., "e2e4" or "e7e8q"
+                    game.move({
+                        from: uci.substring(0, 2),
+                        to: uci.substring(2, 4),
+                        promotion: uci.length > 4 ? uci.substring(4, 5) : undefined
+                    });
+
+                    board.position(game.fen());
+                    updateStatus();
+                })
+                .catch(err => {
+                    if (reqID === currentRequestID) $status.text("Error connecting to bot!");
+                    console.error(err);
+                });
+            }
+        }
+
+        function onSnapEnd () {
+            board.position(game.fen());
+        }
+
+        function updateStatus () {
+            var moveColor = game.turn() === 'w' ? 'White' : 'Black';
+            if (game.in_checkmate()) {
+                $status.text("Game over, " + moveColor + " is in checkmate!");
+            }
+            else if (game.in_draw()) {
+                $status.text("Game over, drawn position");
+            }
+            else {
+                var isAnalysis = document.getElementById('analysis-mode').checked;
+                if (isAnalysis) {
+                    $status.text("Analysis Mode | " + moveColor + " to move");
+                } else {
+                    $status.text(moveColor === 'White' ? "Your Turn" : "Patricia is thinking...");
+                }
+            }
+        }
+
+        function toggleAnalysis() {
+            updateStatus();
+            var isAnalysis = document.getElementById('analysis-mode').checked;
+
+            if (!isAnalysis && game.turn() === 'b' && !game.game_over()) {
+                $status.text("Patricia is thinking...");
+
+                var reqID = ++currentRequestID;
+
+                fetch('/api/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fen: game.fen(), elo: document.getElementById('elo-select').value })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (reqID !== currentRequestID) return;
+
+                    var uci = data.move;
+                    game.move({
+                        from: uci.substring(0, 2),
+                        to: uci.substring(2, 4),
+                        promotion: uci.length > 4 ? uci.substring(4, 5) : undefined
+                    });
+
+                    board.position(game.fen());
+                    updateStatus();
+                });
+            }
+        }
+
+        function undoMove() {
+            console.log("--- Undo Button Clicked ---");
+
+            var isAnalysis = document.getElementById('analysis-mode').checked;
+            currentRequestID++; // Kill pending bot moves
+
+            var historyCount = game.history().length;
+            console.log("Moves in history before undo: " + historyCount);
+
+            if (historyCount === 0) {
+                console.log("No moves to undo!");
+                return;
+            }
+
+            if (isAnalysis) {
+                game.undo();
+                console.log("Analysis Mode: Undid 1 move.");
+            } else {
+                game.undo();
+                console.log("Bot Mode: Undid most recent move.");
+
+                if (game.turn() === 'b' && game.history().length > 0) {
+                    game.undo();
+                    console.log("Bot Mode: Undid bot's move to return to your turn.");
+                }
+            }
+
+            var newFen = game.fen();
+            board.position(newFen, false);
+            updateStatus();
+        }
+
+        function loadFEN() {
+            var fen = prompt("Paste FEN string here:");
+            if (fen) {
+                currentRequestID++;
+                var valid = game.load(fen);
+                if (valid) {
+                    board.position(game.fen());
+                    updateStatus();
+                } else {
+                    alert("Invalid FEN string!");
+                }
+            }
+        }
+
+        function resetGame() {
+            currentRequestID++;
+            game.reset();
+            board.start();
+            updateStatus();
+        }
+
+        var config = {
+            draggable: true,
+            position: 'start',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd,
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+        };
+        board = Chessboard('board', config);
+    </script>
+</body>
+</html>
