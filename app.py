@@ -2,11 +2,22 @@ from flask import Flask, render_template, request, jsonify
 import chess
 import chess.engine
 import os
+import platform 
+import stat 
 
 app = Flask(__name__)
 
-# Make sure patricia.exe is in the same folder as this script!
-ENGINE_PATH = "patricia.exe"
+# Find the exact folder where app.py lives
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if platform.system() == "Windows":
+    ENGINE_PATH = os.path.join(BASE_DIR, "patricia.exe")
+else:
+    ENGINE_PATH = os.path.join(BASE_DIR, "patricia")
+    # Force Linux to make the engine executable
+    os.chmod(ENGINE_PATH, stat.S_IRWXU) 
+
+# Start the engine
 engine = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
 
 
